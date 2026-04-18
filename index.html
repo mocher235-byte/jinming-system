@@ -32,7 +32,6 @@
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         
-        /* 自定義確認視窗 */
         .modal-overlay {
             position: fixed;
             inset: 0;
@@ -48,34 +47,36 @@
 <body>
     <div id="root"></div>
 
-    <!-- Firebase 初始化模組 -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { getFirestore, doc, setDoc, onSnapshot, collection, getDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
-        // 從環境變數獲取配置
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // 嘗試讀取 Firebase 設定
+        let firebaseConfig = {};
+        try {
+            firebaseConfig = JSON.parse(__firebase_config);
+        } catch (e) {
+            console.error("Firebase Config Missing");
+        }
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'class-reward-sync-v1';
 
-        // 將 Firebase 實例與功能暴露給全域，以便 React 使用
+        // 暴露至全域
         window.FirebaseSDK = {
-            auth, db, appId,
+            auth, db, 
             doc, setDoc, onSnapshot, collection, getDoc,
             signInAnonymously, onAuthStateChanged, signInWithCustomToken
         };
         
-        // 觸發自定義事件通知 React
         window.dispatchEvent(new Event('firebase-initialized'));
     </script>
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-        // 音效系統
         const playSound = (type) => {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             if (!AudioContext) return;
@@ -126,17 +127,24 @@
             const [fbReady, setFbReady] = useState(!!window.FirebaseSDK);
             const [user, setUser] = useState(null);
             
+            // 同步代碼 (確保兩邊一致)
+            const [syncId, setSyncId] = useState(() => {
+                const saved = localStorage.getItem('sync_room_id');
+                if (saved) return saved;
+                return typeof __app_id !== 'undefined' ? __app_id : 'default-room-888';
+            });
+            const [tempSyncId, setTempSyncId] = useState(syncId);
+            const [showSyncModal, setShowSyncModal] = useState(false);
+
             const [selectedClass, setSelectedClass] = useState('all');
             const [viewMode, setViewMode] = useState('grid');
             const [isMinusMode, setIsMinusMode] = useState(false);
             const [isEditGroupMode, setIsEditGroupMode] = useState(false);
             
-            // 同步資料
             const [scores, setScores] = useState({});
             const [customGroups, setCustomGroups] = useState({});
             const [absentees, setAbsentees] = useState({});
             
-            // UI 狀態
             const [numGroupsToRandom, setNumGroupsToRandom] = useState(4);
             const [timeLeft, setTimeLeft] = useState(0);
             const [isTimerRunning, setIsTimerRunning] = useState(false);
@@ -147,18 +155,15 @@
             const timerRef = useRef(null);
             const logoUrl = "https://blogger.googleusercontent.com/img/a/AVvXsEjRqKCNWrsH37nthSraJgRc4iUslqv0Pw0urBa9ZwTuV3CLiliGNWjV3EddlJwJ7ox07Uol5GQL77Msjqw-_MUrwQIS6E7iHsdc-RaogP2TVjkJmZ1IkGSrX4ZCLfiZmapAPl5PyxovhZwtsxh080ROmCTJWQcbdtBMAAYIlO-BIsofB7tRYNn0ZZTHEgM_";
 
-            // 監聽 Firebase 是否準備好
             useEffect(() => {
                 const handleReady = () => setFbReady(true);
                 window.addEventListener('firebase-initialized', handleReady);
                 return () => window.removeEventListener('firebase-initialized', handleReady);
             }, []);
 
-            // Firebase 身份驗證 (Rule 3)
             useEffect(() => {
                 if (!fbReady) return;
                 const { auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseSDK;
-
                 const initAuth = async () => {
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         await signInWithCustomToken(auth, __initial_auth_token);
@@ -167,41 +172,40 @@
                     }
                 };
                 initAuth();
-
                 const unsubAuth = onAuthStateChanged(auth, setUser);
                 return () => unsubAuth();
             }, [fbReady]);
 
-            // 監聽雲端數據變動
+            // 當 syncId 改變時，重新監聽雲端數據
             useEffect(() => {
-                if (!user || !fbReady) return;
-                const { db, appId, collection, onSnapshot } = window.FirebaseSDK;
+                if (!user || !fbReady || !syncId) return;
+                const { db, collection, onSnapshot } = window.FirebaseSDK;
 
-                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'states');
+                // 核心 Rule 1：路徑必須包含 appId (這裡使用 syncId)
+                const colRef = collection(db, 'artifacts', syncId, 'public', 'data', 'states');
                 const unsub = onSnapshot(colRef, (snapshot) => {
                     const data = {};
                     snapshot.forEach(doc => data[doc.id] = doc.data().value);
                     if (data.scores) setScores(data.scores);
                     if (data.groups) setCustomGroups(data.groups);
                     if (data.absent) setAbsentees(data.absent);
-                }, (error) => console.error("Snapshot error:", error));
+                }, (error) => console.error("Sync error:", error));
 
+                localStorage.setItem('sync_room_id', syncId);
                 return () => unsub();
-            }, [user, fbReady]);
+            }, [user, fbReady, syncId]);
 
-            // 寫入雲端 (Rule 1)
             const updateCloud = async (type, newValue) => {
-                if (!user || !fbReady) return;
-                const { db, appId, doc, setDoc } = window.FirebaseSDK;
+                if (!user || !fbReady || !syncId) return;
+                const { db, doc, setDoc } = window.FirebaseSDK;
                 try {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'states', type);
+                    const docRef = doc(db, 'artifacts', syncId, 'public', 'data', 'states', type);
                     await setDoc(docRef, { value: newValue });
                 } catch (e) {
                     console.error("Cloud write error:", e);
                 }
             };
 
-            // 計時器邏輯
             useEffect(() => {
                 if (isTimerRunning && timeLeft > 0) {
                     timerRef.current = setInterval(() => {
@@ -305,7 +309,7 @@
                     <div className="min-h-screen flex items-center justify-center bg-slate-50">
                         <div className="text-center">
                             <div className="animate-spin text-4xl mb-4 text-indigo-600">🌀</div>
-                            <div className="text-indigo-600 font-bold">同步連線中...</div>
+                            <div className="text-indigo-600 font-bold">同步服務啟動中...</div>
                         </div>
                     </div>
                 );
@@ -313,6 +317,37 @@
 
             return (
                 <div className="min-h-screen flex flex-col bg-slate-50">
+                    {/* 同步設定彈窗 */}
+                    {showSyncModal && (
+                        <div className="modal-overlay">
+                            <div className="bg-white p-8 rounded-[2rem] shadow-2xl max-w-sm w-full animate__animated animate__fadeInUp">
+                                <h3 className="text-xl font-black mb-2 text-slate-800 text-center">同步房間設定</h3>
+                                <p className="text-xs text-slate-400 mb-6 text-center">請在手機與電腦輸入相同的代碼</p>
+                                <input 
+                                    type="text"
+                                    className="w-full bg-slate-100 border-2 border-transparent focus:border-indigo-500 rounded-2xl px-4 py-3 text-center font-bold text-indigo-600 outline-none mb-6"
+                                    value={tempSyncId}
+                                    onChange={(e) => setTempSyncId(e.target.value)}
+                                    placeholder="輸入同步碼 (例如: room123)"
+                                />
+                                <div className="flex gap-4">
+                                    <button 
+                                        onClick={() => { setSyncId(tempSyncId); setShowSyncModal(false); }}
+                                        className="flex-1 bg-indigo-600 text-white py-3 rounded-2xl font-bold hover:bg-indigo-700"
+                                    >
+                                        進入房間
+                                    </button>
+                                    <button 
+                                        onClick={() => { setTempSyncId(syncId); setShowSyncModal(false); }}
+                                        className="flex-1 bg-slate-100 text-slate-500 py-3 rounded-2xl font-bold hover:bg-slate-200"
+                                    >
+                                        取消
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {confirmModal && (
                         <div className="modal-overlay">
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-sm w-full animate__animated animate__zoomIn">
@@ -338,11 +373,14 @@
                     <header className="bg-indigo-700 text-white shadow-lg sticky top-0 z-30">
                         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
                             <div className="flex items-center gap-4">
-                                <div className="bg-white rounded-xl shadow-inner overflow-hidden flex items-center justify-center w-12 h-12 border-2 border-indigo-200">
+                                <div className="bg-white rounded-xl shadow-inner overflow-hidden flex items-center justify-center w-12 h-12 border-2 border-indigo-200 cursor-pointer" onClick={() => setShowSyncModal(true)}>
                                     <img src={logoUrl} alt="Logo" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
                                 </div>
                                 <div>
-                                    <h1 className="text-xs font-bold opacity-60 uppercase tracking-widest leading-none mb-1">Attendance Sync</h1>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <h1 className="text-xs font-bold opacity-60 uppercase tracking-widest leading-none">Live Attendance</h1>
+                                        <button onClick={() => setShowSyncModal(true)} className="bg-white/20 text-[10px] px-2 py-0.5 rounded hover:bg-white/30 font-bold">房號: {syncId}</button>
+                                    </div>
                                     <select 
                                         className="bg-indigo-800 text-lg font-black rounded-lg px-2 py-0.5 outline-none border-none cursor-pointer"
                                         value={selectedClass}
@@ -366,10 +404,10 @@
                                     </button>
                                 </div>
                                 <div className="flex gap-1.5">
-                                    <button onClick={() => {setTimeLeft(10); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold">10s</button>
-                                    <button onClick={() => {setTimeLeft(30); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold">30s</button>
-                                    <button onClick={() => {setTimeLeft(60); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold">1m</button>
-                                    <button onClick={() => setTimeLeft(0)} className="text-[10px] bg-red-600 px-2 py-1 rounded-md hover:bg-red-500 font-bold">⏹</button>
+                                    <button onClick={() => {setTimeLeft(10); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">10s</button>
+                                    <button onClick={() => {setTimeLeft(30); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">30s</button>
+                                    <button onClick={() => {setTimeLeft(60); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">1m</button>
+                                    <button onClick={() => setTimeLeft(0)} className="text-[10px] bg-red-600 px-2 py-1 rounded-md hover:bg-red-500 font-bold shadow-sm">⏹</button>
                                 </div>
                             </div>
 
@@ -411,8 +449,8 @@
                             <div className="space-y-6">
                                 <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-6">
                                     <div className="flex flex-col gap-1">
-                                        <h3 className="text-slate-800 font-black text-lg tracking-tight">🛠️ 分組管理 (雲端同步)</h3>
-                                        <p className="text-slate-400 text-xs font-bold">自動排除請假人員</p>
+                                        <h3 className="text-slate-800 font-black text-lg tracking-tight">🛠️ 分組管理 (即時同步)</h3>
+                                        <p className="text-slate-400 text-xs font-bold">修改結果將同步至同一同步碼的所有裝置</p>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-4">
                                         <div className="flex items-center bg-slate-50 p-1.5 rounded-2xl border border-slate-200">
@@ -474,7 +512,7 @@
                                     <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-xl"></div>
                                     <div className="text-6xl mb-4">👑</div>
                                     <h2 className="text-4xl font-black">即時榮譽榜</h2>
-                                    <p className="text-indigo-100 opacity-70 mt-2 font-bold uppercase tracking-widest text-xs">Live Cloud Leaderboard</p>
+                                    <p className="text-indigo-100 opacity-70 mt-2 font-bold uppercase tracking-widest text-xs">同步碼: {syncId}</p>
                                 </div>
                                 <div className="divide-y max-h-[60vh] overflow-y-auto no-scrollbar">
                                     {[...currentMembers].sort((a,b) => (scores[b.id] || 0) - (scores[a.id] || 0)).map((m, i) => (
@@ -511,15 +549,15 @@
                         <div className="max-w-7xl mx-auto flex items-center justify-between px-6">
                             <div className="flex gap-10">
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Total Members</span>
+                                    <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">房號: {syncId}</span>
                                     <span className="text-sm font-black text-indigo-600">{currentMembers.length} 人</span>
                                 </div>
                                 <div className="flex flex-col">
                                     <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Sync Status</span>
-                                    <span className="text-green-500 font-black text-[10px] flex items-center gap-1">● 雲端即時連線</span>
+                                    <span className="text-green-500 font-black text-[10px] flex items-center gap-1">● 雲端連線同步中</span>
                                 </div>
                             </div>
-                            <button onClick={() => setConfirmModal({ title: '⚠️ 確定要重設雲端所有資料？', action: () => { updateCloud('scores', {}); updateCloud('groups', {}); updateCloud('absent', {}); playSound('minus'); } })} className="text-[10px] font-black text-slate-300 hover:text-red-500 tracking-[0.2em] transition-colors">HARD RESET CLOUD</button>
+                            <button onClick={() => setConfirmModal({ title: '⚠️ 確定要重設本房所有資料？', action: () => { updateCloud('scores', {}); updateCloud('groups', {}); updateCloud('absent', {}); playSound('minus'); } })} className="text-[10px] font-black text-slate-300 hover:text-red-500 tracking-[0.2em] transition-colors">HARD RESET ROOM</button>
                         </div>
                     </footer>
                 </div>
