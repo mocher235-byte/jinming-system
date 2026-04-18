@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>各縣市出席人員加分系統 - 專業增強版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background: #f1f5f9;
+            user-select: none;
+        }
+        .student-card {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .student-card:active {
+            transform: scale(0.94);
+        }
+        .timer-active {
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // 音效系統
+        const playSound = (type) => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+
+            gain.gain.setValueAtTime(1.0, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+
+            switch(type) {
+                case 'plus':
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(900, ctx.currentTime);
+                    osc.frequency.exponentialRampToValueAtTime(1400, ctx.currentTime + 0.1);
+                    break;
+                case 'minus':
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(400, ctx.currentTime);
+                    osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.3);
+                    break;
+                case 'roll':
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(200 + Math.random() * 600, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.6, ctx.currentTime);
+                    break;
+                case 'alarm':
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(800, ctx.currentTime);
+                    break;
+            }
+            osc.start();
+            osc.stop(ctx.currentTime + (type === 'alarm' ? 1.5 : 0.5));
+        };
+
+        const RAW_DATA = {
+            "yunlin.txt": { county: "雲林縣", names: ["謝瑞娥", "李素蓮", "劉邦欽", "李淑婉"] },
+            "kaohsiung.txt": { county: "高雄市", names: ["王怡瑾", "陳逸虹"] },
+            "pingtung.txt": { county: "屏東縣", names: ["林瓊琳", "陳豐裕"] },
+            "chiayi.txt": { county: "嘉義縣", names: ["林秋娟"] },
+            "changhua.txt": { county: "彰化縣", names: ["黃瑞呈", "林世傑", "葉子琳", "王瑞瑗"] },
+            "nantou.txt": { county: "南投縣", names: ["陳韻偉", "賴小莉", "邊瑞憲", "毛炳楠"] },
+            "tainan.txt": { county: "臺南市", names: ["洪嘉鴻", "吳旋毓", "楊曜穗", "方建宥", "吳政瑞", "呂嘉元"] }
+        };
+
+        const App = () => {
+            const [selectedClass, setSelectedClass] = useState('all');
+            const [viewMode, setViewMode] = useState('grid');
+            const [isMinusMode, setIsMinusMode] = useState(false);
+            const [isEditGroupMode, setIsEditGroupMode] = useState(false);
+            const [imgError, setImgError] = useState(false);
+            
+            // 存檔狀態
+            const [scores, setScores] = useState({});
+            const [customGroups, setCustomGroups] = useState({});
+            const [absentees, setAbsentees] = useState({});
+            
+            // UI 狀態
+            const [numGroupsToRandom, setNumGroupsToRandom] = useState(4);
+            const [timeLeft, setTimeLeft] = useState(0);
+            const [isTimerRunning, setIsTimerRunning] = useState(false);
+            const [luckyStudent, setLuckyStudent] = useState(null);
+            const [isRolling, setIsRolling] = useState(false);
+            const timerRef = useRef(null);
+
+            const logoUrl = "https://blogger.googleusercontent.com/img/a/AVvXsEjRqKCNWrsH37nthSraJgRc4iUslqv0Pw0urBa9ZwTuV3CLiliGNWjV3EddlJwJ7ox07Uol5GQL77Msjqw-_MUrwQIS6E7iHsdc-RaogP2TVjkJmZ1IkGSrX4ZCLfiZmapAPl5PyxovhZwtsxh080ROmCTJWQcbdtBMAAYIlO-BIsofB7tRYNn0ZZTHEgM_";
+
+            useEffect(() => {
+                const savedScores = localStorage.getItem('class_scores_v3');
+                const savedGroups = localStorage.getItem('class_groups_v3');
+                const savedAbsent = localStorage.getItem('class_absent_v3');
+                if (savedScores) setScores(JSON.parse(savedScores));
+                if (savedGroups) setCustomGroups(JSON.parse(savedGroups));
+                if (savedAbsent) setAbsentees(JSON.parse(savedAbsent));
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem('class_scores_v3', JSON.stringify(scores));
+                localStorage.setItem('class_groups_v3', JSON.stringify(customGroups));
+                localStorage.setItem('class_absent_v3', JSON.stringify(absentees));
+            }, [scores, customGroups, absentees]);
+
+            useEffect(() => {
+                if (isTimerRunning && timeLeft > 0) {
+                    timerRef.current = setInterval(() => {
+                        setTimeLeft(prev => {
+                            if (prev === 1) playSound('alarm');
+                            return prev - 1;
+                        });
+                    }, 1000);
+                } else {
+                    clearInterval(timerRef.current);
+                    setIsTimerRunning(false);
+                }
+                return () => clearInterval(timerRef.current);
+            }, [isTimerRunning, timeLeft]);
+
+            const currentMembers = useMemo(() => {
+                let list = [];
+                if (selectedClass === 'all') {
+                    Object.keys(RAW_DATA).forEach(key => {
+                        RAW_DATA[key].names.forEach(name => {
+                            list.push({ name, county: RAW_DATA[key].county, id: `${key}_${name}` });
+                        });
+                    });
+                } else {
+                    const data = RAW_DATA[selectedClass];
+                    data.names.forEach(name => {
+                        list.push({ name, county: data.county, id: `${selectedClass}_${name}` });
+                    });
+                }
+                return list;
+            }, [selectedClass]);
+
+            const handleUpdatePoint = (id, amount = 1) => {
+                const name = id.split('_')[1];
+                if (absentees[name]) return;
+                playSound(isMinusMode ? 'minus' : 'plus');
+                const change = isMinusMode ? -amount : amount;
+                setScores(prev => ({ ...prev, [id]: (prev[id] || 0) + change }));
+            };
+
+            const toggleAbsent = (name, e) => {
+                e.stopPropagation();
+                setAbsentees(prev => ({ ...prev, [name]: !prev[name] }));
+                playSound('roll');
+            };
+
+            const randomGroupAll = () => {
+                const numGroups = parseInt(numGroupsToRandom);
+                if (isNaN(numGroups) || numGroups < 2) return;
+                playSound('roll');
+                const activeMembers = currentMembers.filter(m => !absentees[m.name]);
+                const shuffled = [...activeMembers].sort(() => Math.random() - 0.5);
+                const newGroups = { ...customGroups };
+                currentMembers.forEach(m => { newGroups[m.id] = 0; });
+                shuffled.forEach((m, index) => {
+                    const groupIdx = (index % numGroups) + 1;
+                    newGroups[m.id] = groupIdx;
+                });
+                setTimeout(() => playSound('plus'), 200);
+                setCustomGroups(newGroups);
+                setIsEditGroupMode(false);
+            };
+
+            const resetGroups = () => {
+                const newGroups = { ...customGroups };
+                currentMembers.forEach(m => { newGroups[m.id] = 0; });
+                setCustomGroups(newGroups);
+                playSound('minus');
+            };
+
+            const pickRandom = () => {
+                const available = currentMembers.filter(m => !absentees[m.name]);
+                if (available.length === 0) return;
+                setIsRolling(true);
+                setLuckyStudent(null);
+                let count = 0;
+                const interval = setInterval(() => {
+                    const random = available[Math.floor(Math.random() * available.length)];
+                    setLuckyStudent(random);
+                    playSound('roll');
+                    count++;
+                    if (count >= 15) {
+                        clearInterval(interval);
+                        setIsRolling(false);
+                    }
+                }, 100);
+            };
+
+            const groupedMembers = useMemo(() => {
+                const groups = Array.from({ length: 11 }, () => []);
+                currentMembers.forEach(m => {
+                    const gIdx = customGroups[m.id] || 0;
+                    if (gIdx >= 0 && gIdx <= 10) groups[gIdx].push(m);
+                    else groups[0].push(m);
+                });
+                return groups;
+            }, [currentMembers, customGroups]);
+
+            return (
+                <div className="min-h-screen flex flex-col bg-slate-50">
+                    <header className="bg-indigo-700 text-white shadow-lg sticky top-0 z-30">
+                        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className="bg-white rounded-xl shadow-inner overflow-hidden flex items-center justify-center w-12 h-12 border-2 border-indigo-200">
+                                    {!imgError ? (
+                                        <img 
+                                            src={logoUrl} 
+                                            alt="Logo" 
+                                            className="w-full h-full object-contain" 
+                                            referrerPolicy="no-referrer"
+                                            onError={() => setImgError(true)}
+                                        />
+                                    ) : (
+                                        <span className="text-2xl">🏆</span>
+                                    )}
+                                </div>
+                                <div>
+                                    <h1 className="text-xs font-bold opacity-60 uppercase tracking-widest leading-none mb-1">Attendance Manager</h1>
+                                    <select 
+                                        className="bg-indigo-800 text-lg font-black rounded-lg px-2 py-0.5 outline-none border-none cursor-pointer"
+                                        value={selectedClass}
+                                        onChange={(e) => setSelectedClass(e.target.value)}
+                                    >
+                                        <option value="all">🌍 全縣市名單</option>
+                                        {Object.keys(RAW_DATA).map(key => (
+                                            <option key={key} value={key}>{RAW_DATA[key].county}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* 計時器區域 */}
+                            <div className="flex flex-col items-center bg-black/25 rounded-2xl px-5 py-2 border border-white/10 gap-1.5 min-w-[160px]">
+                                <div className="flex items-center justify-center gap-3 w-full">
+                                    <span className={`text-2xl font-mono font-black w-20 text-center ${timeLeft > 0 && timeLeft < 6 ? 'text-red-400 timer-active' : 'text-white'}`}>
+                                        {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                                    </span>
+                                    <button onClick={() => setIsTimerRunning(!isTimerRunning)} className="text-lg hover:text-indigo-200 transition-colors">
+                                        {isTimerRunning ? '⏸' : '▶️'}
+                                    </button>
+                                </div>
+                                <div className="flex gap-1.5">
+                                    <button onClick={() => {setTimeLeft(10); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">10s</button>
+                                    <button onClick={() => {setTimeLeft(30); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">30s</button>
+                                    <button onClick={() => {setTimeLeft(60); setIsTimerRunning(true);}} className="text-[10px] bg-indigo-600 px-2.5 py-1 rounded-md hover:bg-indigo-500 font-bold shadow-sm">1m</button>
+                                    <button onClick={() => setTimeLeft(0)} className="text-[10px] bg-red-600 px-2 py-1 rounded-md hover:bg-red-500 font-bold shadow-sm">⏹</button>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-2">
+                                <button onClick={pickRandom} className="bg-orange-500 hover:bg-orange-600 px-5 py-2.5 rounded-2xl text-sm font-black shadow-lg transition-all active:scale-90 flex items-center gap-2">
+                                    🎲 抽人
+                                </button>
+                                <button onClick={() => setIsMinusMode(!isMinusMode)} className={`${isMinusMode ? 'bg-red-500' : 'bg-emerald-500'} px-5 py-2.5 rounded-2xl text-sm font-black shadow-lg transition-all active:scale-95`}>
+                                    {isMinusMode ? '➖ 扣分模式' : '➕ 加分模式'}
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    <nav className="bg-white border-b flex justify-center p-3 sticky top-[84px] md:top-[72px] z-20 shadow-sm gap-2">
+                        {[
+                            { id: 'grid', label: '名單', icon: '👤' },
+                            { id: 'group', label: '分組', icon: '👥' },
+                            { id: 'rank', label: '排行', icon: '🏆' }
+                        ].map(tab => (
+                            <button 
+                                key={tab.id}
+                                onClick={() => setViewMode(tab.id)}
+                                className={`px-8 py-2 rounded-2xl text-sm font-black transition-all flex items-center gap-2 ${viewMode === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50'}`}
+                            >
+                                <span>{tab.icon}</span> {tab.label}
+                            </button>
+                        ))}
+                    </nav>
+
+                    <main className="p-6 max-w-7xl mx-auto flex-grow w-full">
+                        {viewMode === 'grid' && (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-5">
+                                {currentMembers.map(m => (
+                                    <div 
+                                        key={m.id} 
+                                        onClick={() => handleUpdatePoint(m.id)} 
+                                        className={`student-card bg-white rounded-[2rem] border border-slate-200 p-6 flex flex-col items-center shadow-sm relative overflow-hidden group ${absentees[m.name] ? 'opacity-40 grayscale pointer-events-none' : 'hover:shadow-xl hover:-translate-y-1 cursor-pointer transition-all'}`}
+                                    >
+                                        <button 
+                                            onClick={(e) => toggleAbsent(m.name, e)}
+                                            className={`absolute top-3 left-3 text-[9px] px-2.5 py-1 rounded-full z-10 font-black transition-all ${absentees[m.name] ? 'bg-red-500 text-white shadow-sm' : 'bg-slate-100 text-slate-400 hover:bg-indigo-100 hover:text-indigo-600 pointer-events-auto'}`}
+                                        >
+                                            {absentees[m.name] ? '🚪 請假中' : '🚪 請假'}
+                                        </button>
+                                        
+                                        <div className="w-16 h-16 bg-slate-50 rounded-3xl flex items-center justify-center text-2xl font-black text-slate-300 mb-3 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
+                                            {m.name[0]}
+                                        </div>
+                                        <div className="text-slate-800 font-black text-base text-center mb-0.5">{m.name}</div>
+                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">{m.county}</div>
+                                        <div className={`text-4xl font-black ${(scores[m.id] || 0) > 0 ? 'text-indigo-600' : (scores[m.id] || 0) < 0 ? 'text-red-500' : 'text-slate-200'}`}>
+                                            {scores[m.id] || 0}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {viewMode === 'group' && (
+                            <div className="space-y-6">
+                                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-6">
+                                    <div className="flex flex-col gap-1">
+                                        <h3 className="text-slate-800 font-black text-lg flex items-center gap-2">🛠️ 分組管理</h3>
+                                        <p className="text-slate-400 text-xs font-bold">手動調整或使用下方工具進行自動分組</p>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-4">
+                                        <div className="flex items-center bg-slate-50 p-1.5 rounded-2xl border border-slate-200">
+                                            <span className="px-3 text-xs font-black text-slate-500">分成幾組？</span>
+                                            <input 
+                                                type="number" 
+                                                min="2" max="10" 
+                                                className="w-14 bg-white border border-slate-200 rounded-xl px-2 py-1 text-center font-black text-indigo-600 outline-none"
+                                                value={numGroupsToRandom}
+                                                onChange={(e) => setNumGroupsToRandom(e.target.value)}
+                                            />
+                                            <button 
+                                                onClick={randomGroupAll}
+                                                className="ml-2 bg-indigo-600 text-white px-5 py-2 rounded-xl text-xs font-black hover:bg-indigo-700 shadow-md transition-all active:scale-95"
+                                            >
+                                                🎲 隨機分組
+                                            </button>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button 
+                                                onClick={resetGroups}
+                                                className="bg-slate-100 text-slate-500 px-5 py-2 rounded-xl text-xs font-black hover:bg-red-50 hover:text-red-500 transition-all border border-slate-200"
+                                            >
+                                                ♻️ 重置
+                                            </button>
+                                            <button 
+                                                onClick={() => setIsEditGroupMode(!isEditGroupMode)}
+                                                className={`px-5 py-2 rounded-xl text-xs font-black shadow-sm transition-all ${isEditGroupMode ? 'bg-emerald-500 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
+                                            >
+                                                {isEditGroupMode ? '✅ 完成調整' : '⚙️ 手動調整'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                                    {groupedMembers.map((group, idx) => (
+                                        (group.length > 0 || idx > 0) && (
+                                            <div key={idx} className={`bg-white rounded-[3rem] p-8 shadow-sm border-2 ${idx === 0 ? 'border-dashed border-slate-200 bg-transparent' : 'border-white'}`}>
+                                                <div className="flex justify-between items-center mb-6">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className={`w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm ${idx === 0 ? 'bg-slate-100 text-slate-400' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'}`}>
+                                                            {idx === 0 ? '?' : idx}
+                                                        </span>
+                                                        <h2 className="text-xl font-black text-slate-800 tracking-tight">
+                                                            {idx === 0 ? '未分配人員' : `第 ${idx} 組`}
+                                                        </h2>
+                                                    </div>
+                                                    {idx > 0 && group.length > 0 && (
+                                                        <button 
+                                                            onClick={() => group.forEach(m => handleUpdatePoint(m.id))}
+                                                            className={`px-4 py-1.5 rounded-full text-[10px] font-black shadow-sm transition-all ${isMinusMode ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}
+                                                        >
+                                                            全組 {isMinusMode ? '− 1' : '+ 1'}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <div className="space-y-3">
+                                                    {group.map(m => (
+                                                        <div key={m.id} className="flex items-center justify-between bg-slate-50/50 p-4 rounded-2xl border border-slate-100 group">
+                                                            <div className="flex flex-col">
+                                                                <span className="font-black text-slate-700 text-sm leading-none mb-1">{m.name}</span>
+                                                                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{m.county}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="font-black text-indigo-600 text-xl tracking-tighter">{scores[m.id] || 0}</span>
+                                                                {isEditGroupMode && (
+                                                                    <select 
+                                                                        className="bg-white border-2 border-slate-200 rounded-xl px-2 py-1 text-xs text-indigo-700 font-black focus:border-indigo-500 outline-none cursor-pointer shadow-sm"
+                                                                        value={idx}
+                                                                        onChange={(e) => setCustomGroups(prev => ({ ...prev, [m.id]: parseInt(e.target.value) }))}
+                                                                    >
+                                                                        {Array.from({length: 11}).map((_, i) => (
+                                                                            <option key={i} value={i}>{i === 0 ? '未分組' : `G${i}`}</option>
+                                                                        ))}
+                                                                    </select>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                    {group.length === 0 && <div className="text-center py-8 text-slate-200 font-black text-sm uppercase tracking-widest">Empty Group</div>}
+                                                </div>
+                                            </div>
+                                        )
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {viewMode === 'rank' && (
+                            <div className="max-w-2xl mx-auto bg-white rounded-[3rem] shadow-2xl border border-slate-100 overflow-hidden">
+                                <div className="bg-indigo-600 p-12 text-white text-center relative overflow-hidden">
+                                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
+                                    <div className="text-6xl mb-4 animate__animated animate__bounceIn">👑</div>
+                                    <h2 className="text-4xl font-black tracking-tight mb-2">榮譽里程碑</h2>
+                                    <p className="text-indigo-100/70 font-bold text-xs uppercase tracking-[0.3em]">Leaderboard Rankings</p>
+                                </div>
+                                <div className="divide-y divide-slate-50 max-h-[60vh] overflow-y-auto no-scrollbar">
+                                    {[...currentMembers]
+                                        .sort((a,b) => (scores[b.id] || 0) - (scores[a.id] || 0))
+                                        .map((m, i) => (
+                                            <div key={m.id} className="flex items-center justify-between p-7 hover:bg-indigo-50/50 transition-colors group">
+                                                <div className="flex items-center gap-8">
+                                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-xl transition-all shadow-lg ${
+                                                        i === 0 ? 'bg-yellow-400 text-white shadow-yellow-200 rotate-12 scale-110' : 
+                                                        i === 1 ? 'bg-slate-300 text-white shadow-slate-200 -rotate-6' : 
+                                                        i === 2 ? 'bg-amber-600 text-white shadow-amber-200 rotate-6' : 'bg-slate-50 text-slate-300 shadow-none'
+                                                    }`}>
+                                                        {i + 1}
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-black text-slate-800 text-2xl leading-none mb-1 group-hover:text-indigo-600 transition-colors">{m.name}</div>
+                                                        <div className="text-xs text-slate-400 font-black uppercase tracking-widest">{m.county}</div>
+                                                    </div>
+                                                </div>
+                                                <div className="text-4xl font-black text-indigo-600 tabular-nums tracking-tighter">{scores[m.id] || 0}</div>
+                                            </div>
+                                        ))}
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {luckyStudent && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/90 backdrop-blur-xl animate__animated animate__fadeIn">
+                            <div className="bg-white rounded-[4rem] p-16 max-w-sm w-full text-center shadow-[0_0_150px_rgba(79,70,229,0.4)] border border-white animate__animated animate__zoomIn">
+                                <div className="text-7xl mb-8">💎</div>
+                                <div className="text-slate-400 font-black uppercase tracking-[0.2em] text-xs mb-3 opacity-60">Selection Complete</div>
+                                <div className="text-indigo-400 text-[10px] font-black mb-1 uppercase tracking-widest">{luckyStudent.county}</div>
+                                <div className={`text-6xl font-black text-indigo-700 mb-12 tracking-tighter ${isRolling ? 'blur-xl scale-110 opacity-50' : 'animate__animated animate__tada'}`}>
+                                    {luckyStudent.name}
+                                </div>
+                                {!isRolling && (
+                                    <div className="flex flex-col gap-4">
+                                        <button 
+                                            onClick={() => { handleUpdatePoint(luckyStudent.id); setLuckyStudent(null); }} 
+                                            className="w-full bg-indigo-600 text-white py-6 rounded-[2rem] font-black text-xl shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all hover:-translate-y-1 active:scale-95"
+                                        >
+                                            🏆 獲得獎勵
+                                        </button>
+                                        <button onClick={() => setLuckyStudent(null)} className="text-slate-400 font-black text-xs hover:text-slate-600 transition-colors">取消並返回</button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="bg-white border-t p-6 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] z-40">
+                        <div className="max-w-7xl mx-auto flex items-center justify-between px-6">
+                            <div className="flex items-center gap-10">
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1">Total Members</span>
+                                    <span className="text-sm font-black text-indigo-600 leading-none">{currentMembers.length} <span className="text-slate-400 text-[10px]">人</span></span>
+                                </div>
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1">Absent Status</span>
+                                    <span className="text-sm font-black text-red-400 leading-none">{Object.values(absentees).filter(Boolean).length} <span className="text-slate-400 text-[10px]">人</span></span>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-8">
+                                <button 
+                                    onClick={() => { if(confirm('⚠️ 確定清除所有資料嗎？')) { setScores({}); setCustomGroups({}); setAbsentees({}); playSound('minus'); }}}
+                                    className="text-[10px] font-black text-slate-300 hover:text-red-500 transition-colors tracking-[0.2em] border-b border-transparent hover:border-red-200 pb-1"
+                                >
+                                    HARD SYSTEM RESET
+                                </button>
+                                <div className="bg-slate-100 px-4 py-1 rounded-full text-[9px] font-black text-slate-400 tracking-widest uppercase">
+                                    v3.3 Master Edition
+                                </div>
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
